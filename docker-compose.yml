@@ -1,0 +1,45 @@
+services:
+  explainer-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    user: "${HOST_UID}:${HOST_GID}"
+
+    ports:
+      - "127.0.0.1:${BACKEND_PORT}:8765"
+
+    environment:
+      EXPLAINER_DB_PATH: /data/explainer.sqlite3
+      EXPLAINER_HOST: 0.0.0.0
+      EXPLAINER_PORT: "8765"
+      EXPLAINER_ALLOWED_ROOTS: "/workspace;/host_root"
+      EXPLAINER_ALLOWED_ORIGINS: "https://swipswaps.github.io,http://localhost:8000,http://127.0.0.1:8000"
+      EXPLAINER_MAX_FILE_BYTES: "512000"
+
+    volumes:
+      - ./data:/data${VOL_OPTS_RW}
+      - ./:/workspace${VOL_OPTS_RO}
+      - ${HOST_SCAN_ROOT}:/host_root${VOL_OPTS_RO}
+
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL

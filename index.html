@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat and Project Explainer</title>
+<style>
+body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+section { border: 1px solid #8886; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+pre { overflow-x: auto; white-space: pre-wrap; }
+input { padding: .6rem; width: 70%; }
+button { padding: .6rem 1rem; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>Chat and Project Explainer</h1>
+
+<section>
+  <h2>Backend status</h2>
+  <p id="status">Checking local backend...</p>
+  <pre id="health"></pre>
+</section>
+
+<section>
+  <h2>Projects</h2>
+  <pre id="projects">Waiting for backend...</pre>
+</section>
+
+<section>
+  <h2>Chat sessions</h2>
+  <pre id="chats">Waiting for backend...</pre>
+</section>
+
+<section>
+  <h2>Search projects and chats</h2>
+  <input id="query" placeholder="Search indexed content">
+  <button id="search">Search</button>
+  <pre id="results"></pre>
+</section>
+
+<script>
+"use strict";
+
+const API = "http://127.0.0.1:8765";
+const byId = (id) => document.getElementById(id);
+
+async function api(path) {
+    const response = await fetch(API + path, {
+        method: "GET",
+        mode: "cors",
+        cache: "no-store"
+    });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    return response.json();
+}
+
+async function load() {
+    try {
+        const health = await api("/api/health");
+        byId("status").textContent = "Backend operational";
+        byId("health").textContent = JSON.stringify(health, null, 2);
+
+        const projects = await api("/api/projects");
+        byId("projects").textContent =
+            JSON.stringify(projects.projects, null, 2);
+
+        const chats = await api("/api/chats");
+        byId("chats").textContent =
+            JSON.stringify(chats.sessions, null, 2);
+    } catch (error) {
+        byId("status").textContent =
+            "Local backend unavailable: " + error.message;
+        byId("projects").textContent = "Static frontend mode";
+        byId("chats").textContent =
+            "Start the local Docker backend to inspect chat sessions.";
+    }
+}
+
+byId("search").addEventListener("click", async () => {
+    const query = byId("query").value.trim();
+    if (!query) {
+        byId("results").textContent = "Enter a search query.";
+        return;
+    }
+    try {
+        const result = await api("/api/search?q=" + encodeURIComponent(query));
+        byId("results").textContent = JSON.stringify(result, null, 2);
+    } catch (error) {
+        byId("results").textContent = error.message;
+    }
+});
+
+load();
+</script>
+</body>
+</html>

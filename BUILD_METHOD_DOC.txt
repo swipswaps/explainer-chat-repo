@@ -1,0 +1,39 @@
+BUILD METHOD AND DESIGN NOTES
+=============================
+
+SQLite transaction correction
+------------------------------
+
+sqlite3.Connection.executescript() implicitly commits a pending transaction.
+Do not wrap executescript() in a transaction context manager that later
+attempts another COMMIT.
+
+This build places BEGIN IMMEDIATE and COMMIT inside the SQL script passed to
+executescript(). Ordinary data changes use an explicit transaction context.
+
+Filesystem boundary
+-------------------
+
+Every scan and chat import resolves its path and verifies that it is inside
+one of the configured allowlisted roots. Symbolic-link directories and files
+are not followed by the project scanner.
+
+Project indexing scans completely before opening the write transaction.
+Stale database rows are pruned only after the scan succeeds.
+
+Chat ingestion
+--------------
+
+Chat exports are parsed before the database transaction begins. An oversized
+chat export is rejected rather than silently truncated. Importing the same
+source repeatedly updates the same session and message sequence.
+
+Network boundary
+----------------
+
+The HTTP service listens inside the container. Docker publishes its port only
+on 127.0.0.1. Browser origins must be explicitly allowlisted. Private Network
+Access is granted only to an allowed origin that requests it.
+
+GitHub Pages is a static frontend. It is not the backend host and does not
+receive the local SQLite database.

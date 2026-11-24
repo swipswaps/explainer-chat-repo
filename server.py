@@ -254,10 +254,10 @@ def create_handler(db_path: Path, config: ExplainerConfig):
                 self._send_json(404, {"error": "Endpoint not found"})
             except ValueError as exc:
                 self._send_json(400, {"error": str(exc)})
-            except sqlite3.Error:
-                self._send_json(500, {"error": "SQLite query failure"})
-            except Exception:
-                self._send_json(500, {"error": "Unexpected server error"})
+            except sqlite3.Error as exc:
+                self._send_json(500, {"error": f"SQLite query failure: {exc}"})
+            except Exception as exc:
+                self._send_json(500, {"error": f"Unexpected server error: {exc}"})
 
     return ExplainerHandler
 

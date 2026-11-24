@@ -12,7 +12,7 @@ services:
       EXPLAINER_HOST: 0.0.0.0
       EXPLAINER_PORT: "8765"
       EXPLAINER_ALLOWED_ROOTS: "/workspace;/host_root;/data"
-      EXPLAINER_ALLOWED_ORIGINS: "https://swipswaps.github.io,http://localhost:8000,http://127.0.0.1:8000"
+      EXPLAINER_ALLOWED_ORIGINS: "https://swipswaps.github.io,https://start.fedoraproject.org,http://localhost:8000,http://127.0.0.1:8000"
       EXPLAINER_MAX_FILE_BYTES: "512000"
     volumes:
       - "./data:/data${SELINUX_RW:-}"

@@ -42,6 +42,7 @@ class ExplainerConfig:
     max_api_content_chars: int = 100_000
     allowed_origins: Tuple[str, ...] = (
         "https://swipswaps.github.io",
+        "https://start.fedoraproject.org",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     )
@@ -97,7 +98,7 @@ def load_config_from_env() -> ExplainerConfig:
 
     origins_raw = os.environ.get(
         "EXPLAINER_ALLOWED_ORIGINS",
-        "https://swipswaps.github.io,http://localhost:8000,http://127.0.0.1:8000",
+        "https://swipswaps.github.io,https://start.fedoraproject.org,http://localhost:8000,http://127.0.0.1:8000",
     )
     origins = tuple(item.strip() for item in origins_raw.split(",") if item.strip())
     if "*" in origins:

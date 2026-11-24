@@ -7,8 +7,8 @@ How we got here:
   with GitHub Pages workflow (.github/workflows/pages.yml) and Compose setup.
 
 Where we are:
-- Hardened workflow YAML indentation, transactional DDL, CORS allowlist, and
-  idempotent GitHub repository + Pages publishing automation.
+- Hardened workflow YAML indentation, transactional DDL, CORS allowlist,
+  isolated backend health verification prior to xdg-open, and GitHub Pages publishing.
 
 What makes sense next:
 - Verify GitHub Pages deployment status and run local CLI or Docker Compose

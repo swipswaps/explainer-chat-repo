@@ -3,30 +3,25 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-
-    user: "${HOST_UID}:${HOST_GID}"
-
+    container_name: explainer-chat-backend
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     ports:
-      - "127.0.0.1:${BACKEND_PORT}:8765"
-
+      - "127.0.0.1:${BACKEND_PORT:-8765}:8765"
     environment:
       EXPLAINER_DB_PATH: /data/explainer.sqlite3
       EXPLAINER_HOST: 0.0.0.0
       EXPLAINER_PORT: "8765"
-      EXPLAINER_ALLOWED_ROOTS: "/workspace;/host_root"
+      EXPLAINER_ALLOWED_ROOTS: "/workspace;/host_root;/data"
       EXPLAINER_ALLOWED_ORIGINS: "https://swipswaps.github.io,http://localhost:8000,http://127.0.0.1:8000"
       EXPLAINER_MAX_FILE_BYTES: "512000"
-
     volumes:
-      - ./data:/data${VOL_OPTS_RW}
-      - ./:/workspace${VOL_OPTS_RO}
-      - ${HOST_SCAN_ROOT}:/host_root${VOL_OPTS_RO}
-
+      - "./data:/data${SELINUX_RW:-}"
+      - "./:/workspace:ro${SELINUX_RO:-}"
+      - "${HOST_SCAN_ROOT:-.}:/host_root:ro${SELINUX_RO:-}"
     restart: unless-stopped
     read_only: true
     tmpfs:
       - /tmp
-
     healthcheck:
       test:
         - CMD
@@ -37,9 +32,7 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
-
     security_opt:
       - no-new-privileges:true
-
     cap_drop:
       - ALL

@@ -1,4 +1,5 @@
 data/
+.build-evidence/
 .build-backups/
 .build-staging/
 __pycache__/

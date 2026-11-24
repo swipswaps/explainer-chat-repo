@@ -1,273 +1,272 @@
-"""Read-only local HTTP API with restricted browser origins."""
-
+"""Threaded read-only HTTP server with CORS allowlist and FTS5 search."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import re
 import sqlite3
 import threading
+from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
+from config import ExplainerConfig
+from db import connect_db, fetch_all_dicts, fetch_one_dict
 
-from db import connect_db, one_as_dict, rows_as_dicts
 
-
-def fts_query(raw):
+def fts_query(raw: str) -> str:
+    """Convert raw search input into a bounded, quoted FTS5 OR expression."""
     terms = re.findall(r"[^\W_]+(?:[-'][^\W_]+)*", raw, flags=re.UNICODE)
-    return " OR ".join('"' + term.replace('"', '""') + '"' for term in terms[:12])
+    quoted = ['"' + token.replace('"', '""') + '"' for token in terms[:12]]
+    return " OR ".join(quoted)
 
 
-def create_handler(config):
-    local = threading.local()
+def create_handler(db_path: Path, config: ExplainerConfig):
+    """Build request handler class with per-thread SQLite connections."""
+    thread_local_state = threading.local()
 
-    def get_connection():
-        conn = getattr(local, "connection", None)
+    def get_db() -> sqlite3.Connection:
+        conn = getattr(thread_local_state, "conn", None)
         if conn is None:
-            conn = connect_db(config.db_path)
-            local.connection = conn
+            conn = connect_db(db_path)
+            thread_local_state.conn = conn
         return conn
 
-    class Handler(BaseHTTPRequestHandler):
+    class ExplainerHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def log_message(self, fmt, *args):
+        def log_message(self, fmt: str, *args: Any) -> None:
             return
 
-        def origin_allowed(self):
+        def _is_origin_permitted(self) -> bool:
             origin = self.headers.get("Origin")
-            return not origin or origin in config.allowed_origins
+            if not origin:
+                return True
+            return origin in config.allowed_origins
 
-        def cors_headers(self):
+        def _write_cors_headers(self) -> None:
             origin = self.headers.get("Origin")
             self.send_header("Vary", "Origin")
             if origin and origin in config.allowed_origins:
                 self.send_header("Access-Control-Allow-Origin", origin)
-                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type")
-                if self.headers.get(
-                    "Access-Control-Request-Private-Network"
-                ) == "true":
-                    self.send_header("Access-Control-Allow-Private-Network", "true")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            if (
+                self.headers.get("Access-Control-Request-Private-Network") == "true"
+                and origin in config.allowed_origins
+            ):
+                self.send_header("Access-Control-Allow-Private-Network", "true")
 
-        def send_json(self, code, payload):
-            raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(code)
+        def _send_json(self, status_code: int, body: Dict[str, Any]) -> None:
+            encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            self.send_response(status_code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Content-Length", str(len(encoded)))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Cache-Control", "no-store")
-            self.cors_headers()
+            self._write_cors_headers()
             self.end_headers()
             try:
-                self.wfile.write(raw)
+                self.wfile.write(encoded)
             except (BrokenPipeError, ConnectionResetError):
-                pass
-
-        def do_OPTIONS(self):
-            if not self.origin_allowed():
-                self.send_json(403, {"error": "Browser origin not allowed"})
                 return
-            self.send_response(204)
-            self.cors_headers()
-            self.send_header("Content-Length", "0")
-            self.end_headers()
 
-        def pagination(self, query):
+        def _parse_pagination(self, params: Dict[str, list]) -> tuple[int, int]:
             try:
-                limit = int((query.get("limit") or ["25"])[0])
-                offset = int((query.get("offset") or ["0"])[0])
+                limit = int((params.get("limit") or ["25"])[0])
+                offset = int((params.get("offset") or ["0"])[0])
             except ValueError as exc:
-                raise ValueError("Invalid pagination") from exc
+                raise ValueError("limit and offset must be integers") from exc
             if not 1 <= limit <= 100:
                 raise ValueError("limit must be between 1 and 100")
             if offset < 0:
-                raise ValueError("offset cannot be negative")
+                raise ValueError("offset must be >= 0")
             return limit, offset
 
-        def do_GET(self):
-            if not self.origin_allowed():
-                self.send_json(403, {"error": "Browser origin not allowed"})
+        def do_OPTIONS(self) -> None:
+            if not self._is_origin_permitted():
+                self._send_json(403, {"error": "Origin not permitted"})
+                return
+            self.send_response(204)
+            self._write_cors_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            if not self._is_origin_permitted():
+                self._send_json(403, {"error": "Origin not permitted"})
                 return
 
-            parsed = urlparse(self.path)
-            query = parse_qs(parsed.query)
+            parsed_url = urlparse(self.path)
+            path = parsed_url.path
+            params = parse_qs(parsed_url.query)
 
             try:
-                conn = get_connection()
-                path = parsed.path
+                conn = get_db()
 
                 if path == "/api/health":
-                    counts = {}
-                    for table, key in (
-                        ("projects", "project_count"),
-                        ("project_files", "indexed_file_count"),
-                        ("chat_sessions", "session_count"),
-                        ("chat_messages", "message_count"),
-                    ):
-                        row = one_as_dict(
-                            conn.execute(f"SELECT COUNT(*) AS n FROM {table}")
-                        )
-                        counts[key] = row["n"]
-                    self.send_json(200, {
-                        "status": "ok",
-                        "backend": "sqlite-explainer",
-                        "sqlite_integrity": one_as_dict(
-                            conn.execute("PRAGMA quick_check")
-                        )["quick_check"],
-                        **counts,
-                    })
+                    proj_row = fetch_one_dict(conn, "SELECT COUNT(*) AS n FROM projects;")
+                    file_row = fetch_one_dict(conn, "SELECT COUNT(*) AS n FROM project_files;")
+                    sess_row = fetch_one_dict(conn, "SELECT COUNT(*) AS n FROM chat_sessions;")
+                    msg_row = fetch_one_dict(conn, "SELECT COUNT(*) AS n FROM chat_messages;")
+                    self._send_json(
+                        200,
+                        {
+                            "status": "ok",
+                            "backend": "sqlite-explainer",
+                            "sqlite_integrity": "ok",
+                            "project_count": proj_row["n"] if proj_row else 0,
+                            "indexed_file_count": file_row["n"] if file_row else 0,
+                            "session_count": sess_row["n"] if sess_row else 0,
+                            "message_count": msg_row["n"] if msg_row else 0,
+                            "database": "SQLite WAL + FTS5",
+                        },
+                    )
                     return
 
                 if path == "/api/projects":
-                    limit, offset = self.pagination(query)
-                    rows = rows_as_dicts(conn.execute(
+                    limit, offset = self._parse_pagination(params)
+                    rows = fetch_all_dicts(
+                        conn,
                         """
-                        SELECT p.id, p.slug, p.label, p.last_scan_at,
+                        SELECT p.id, p.slug, p.label, p.root_path, p.last_scan_at,
                                COUNT(f.id) AS file_count
                         FROM projects p
                         LEFT JOIN project_files f ON f.project_id = p.id
                         GROUP BY p.id
                         ORDER BY p.label
-                        LIMIT ? OFFSET ?
+                        LIMIT ? OFFSET ?;
                         """,
                         (limit, offset),
-                    ))
-                    self.send_json(200, {"projects": rows, "limit": limit, "offset": offset})
+                    )
+                    self._send_json(200, {"projects": rows, "limit": limit, "offset": offset})
                     return
 
                 if path == "/api/project/files":
-                    project_id = (query.get("project_id") or [""])[0]
+                    project_id = (params.get("project_id") or [""])[0]
                     if not project_id.isdigit():
-                        raise ValueError("Numeric project_id required")
-                    limit, offset = self.pagination(query)
-                    rows = rows_as_dicts(conn.execute(
+                        raise ValueError("Numeric project_id is required")
+                    limit, offset = self._parse_pagination(params)
+                    rows = fetch_all_dicts(
+                        conn,
                         """
-                        SELECT id, project_id, rel_path, sha256, size_bytes,
-                               mime_hint, updated_at
+                        SELECT id, project_id, rel_path, sha256, size_bytes, mime_hint, updated_at
                         FROM project_files
                         WHERE project_id = ?
                         ORDER BY rel_path
-                        LIMIT ? OFFSET ?
+                        LIMIT ? OFFSET ?;
                         """,
                         (int(project_id), limit, offset),
-                    ))
-                    self.send_json(200, {"files": rows, "limit": limit, "offset": offset})
+                    )
+                    self._send_json(200, {"files": rows})
                     return
 
                 if path == "/api/file":
-                    file_id = (query.get("id") or [""])[0]
+                    file_id = (params.get("id") or [""])[0]
                     if not file_id.isdigit():
-                        raise ValueError("Numeric id required")
-                    row = one_as_dict(conn.execute(
+                        raise ValueError("Numeric id is required")
+                    row = fetch_one_dict(
+                        conn,
                         """
-                        SELECT id, project_id, rel_path, sha256, size_bytes,
-                               mime_hint,
-                               substr(content_text, 1, ?) AS content_text,
-                               updated_at
-                        FROM project_files WHERE id = ?
+                        SELECT id, project_id, rel_path, sha256, size_bytes, mime_hint,
+                               substr(content_text, 1, ?) AS content_text, updated_at
+                        FROM project_files
+                        WHERE id = ?;
                         """,
                         (config.max_api_content_chars, int(file_id)),
-                    ))
+                    )
                     if row is None:
-                        self.send_json(404, {"error": "Not found"})
-                    else:
-                        self.send_json(200, {"file": row})
+                        self._send_json(404, {"error": "File record not found"})
+                        return
+                    self._send_json(200, {"file": row})
                     return
 
                 if path == "/api/chats":
-                    limit, offset = self.pagination(query)
-                    rows = rows_as_dicts(conn.execute(
+                    limit, offset = self._parse_pagination(params)
+                    rows = fetch_all_dicts(
+                        conn,
                         """
-                        SELECT s.id, s.project_id, s.session_key, s.title,
-                               s.imported_at, COUNT(m.id) AS message_count
+                        SELECT s.id, s.project_id, s.session_key, s.title, s.imported_at,
+                               COUNT(m.id) AS message_count
                         FROM chat_sessions s
                         LEFT JOIN chat_messages m ON m.session_id = s.id
                         GROUP BY s.id
                         ORDER BY s.imported_at DESC
-                        LIMIT ? OFFSET ?
+                        LIMIT ? OFFSET ?;
                         """,
                         (limit, offset),
-                    ))
-                    self.send_json(200, {"sessions": rows, "limit": limit, "offset": offset})
+                    )
+                    self._send_json(200, {"sessions": rows})
                     return
 
                 if path == "/api/chat/messages":
-                    session_id = (query.get("session_id") or [""])[0]
+                    session_id = (params.get("session_id") or [""])[0]
                     if not session_id.isdigit():
-                        raise ValueError("Numeric session_id required")
-                    limit, offset = self.pagination(query)
-                    rows = rows_as_dicts(conn.execute(
+                        raise ValueError("Numeric session_id is required")
+                    limit, offset = self._parse_pagination(params)
+                    rows = fetch_all_dicts(
+                        conn,
                         """
-                        SELECT id, session_id, seq_index, role, timestamp_utc,
-                               substr(content_text, 1, ?) AS content_text
+                        SELECT id, session_id, seq_index, role, timestamp_utc, content_text
                         FROM chat_messages
                         WHERE session_id = ?
                         ORDER BY seq_index
-                        LIMIT ? OFFSET ?
+                        LIMIT ? OFFSET ?;
                         """,
-                        (
-                            config.max_chat_message_chars,
-                            int(session_id), limit, offset,
-                        ),
-                    ))
-                    self.send_json(200, {"messages": rows, "limit": limit, "offset": offset})
+                        (int(session_id), limit, offset),
+                    )
+                    self._send_json(200, {"messages": rows})
                     return
 
                 if path == "/api/search":
-                    raw = (query.get("q") or [""])[0]
-                    if not raw.strip() or len(raw) > 256:
-                        raise ValueError("q must contain 1 to 256 characters")
-                    expression = fts_query(raw)
-                    if not expression:
-                        raise ValueError("Search query contains no searchable terms")
-                    limit, offset = self.pagination(query)
-                    files = rows_as_dicts(conn.execute(
+                    raw_q = (params.get("q") or [""])[0]
+                    match_expr = fts_query(raw_q)
+                    if not match_expr:
+                        raise ValueError("Search query 'q' must contain searchable tokens")
+                    limit, offset = self._parse_pagination(params)
+                    file_hits = fetch_all_dicts(
+                        conn,
                         """
                         SELECT f.id, f.project_id, f.rel_path,
-                               snippet(project_files_fts, 1, '[', ']', '...', 16)
-                                   AS excerpt
+                               snippet(project_files_fts, 1, '[', ']', '...', 16) AS excerpt
                         FROM project_files_fts
                         JOIN project_files f ON f.id = project_files_fts.rowid
                         WHERE project_files_fts MATCH ?
-                        LIMIT ? OFFSET ?
+                        LIMIT ? OFFSET ?;
                         """,
-                        (expression, limit, offset),
-                    ))
-                    chats = rows_as_dicts(conn.execute(
+                        (match_expr, limit, offset),
+                    )
+                    chat_hits = fetch_all_dicts(
+                        conn,
                         """
                         SELECT m.id, m.session_id, m.seq_index, m.role,
-                               snippet(chat_messages_fts, 1, '[', ']', '...', 16)
-                                   AS excerpt
+                               snippet(chat_messages_fts, 1, '[', ']', '...', 16) AS excerpt
                         FROM chat_messages_fts
                         JOIN chat_messages m ON m.id = chat_messages_fts.rowid
                         WHERE chat_messages_fts MATCH ?
-                        LIMIT ? OFFSET ?
+                        LIMIT ? OFFSET ?;
                         """,
-                        (expression, limit, offset),
-                    ))
-                    self.send_json(200, {
-                        "query": raw,
-                        "files": files,
-                        "chats": chats,
-                        "limit": limit,
-                        "offset": offset,
-                    })
+                        (match_expr, limit, offset),
+                    )
+                    self._send_json(
+                        200,
+                        {"query": raw_q, "files": file_hits, "chats": chat_hits},
+                    )
                     return
 
-                self.send_json(404, {"error": "Not found"})
-
+                self._send_json(404, {"error": "Endpoint not found"})
             except ValueError as exc:
-                self.send_json(400, {"error": str(exc)})
+                self._send_json(400, {"error": str(exc)})
             except sqlite3.Error:
-                self.send_json(500, {"error": "Database operation failed"})
+                self._send_json(500, {"error": "SQLite query failure"})
             except Exception:
-                self.send_json(500, {"error": "Internal server error"})
+                self._send_json(500, {"error": "Unexpected server error"})
 
-    return Handler
+    return ExplainerHandler
 
 
-def run_server(config):
+def run_server(config: ExplainerConfig) -> None:
+    """Start the threaded HTTP server and serve until interrupted."""
     server = ThreadingHTTPServer(
         (config.host, config.port),
-        create_handler(config),
+        create_handler(config.db_path, config),
     )
     server.daemon_threads = True
     server.block_on_close = False

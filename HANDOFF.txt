@@ -1,0 +1,15 @@
+explainer-chat-repo HANDOFF
+===========================
+
+How we got here:
+- Built SQLite WAL + FTS5 project/chat indexer and HTTP server (config.py,
+  db.py, schema.sql, scanner.py, chat_ingest.py, indexer.py, server.py, cli.py)
+  with GitHub Pages workflow (.github/workflows/pages.yml) and Compose setup.
+
+Where we are:
+- Hardened workflow YAML indentation, transactional DDL, CORS allowlist, and
+  idempotent GitHub repository + Pages publishing automation.
+
+What makes sense next:
+- Verify GitHub Pages deployment status and run local CLI or Docker Compose
+  smoke queries against /api/health and /api/search.

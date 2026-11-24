@@ -1,0 +1,15 @@
+.git
+.gitignore
+data
+.build-evidence
+.build-backups
+.build-staging
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

@@ -1,67 +1,59 @@
-"""Command-line interface for project indexing, chat ingestion and search."""
-
+"""CLI entrypoint for database initialization, scanning, ingestion, search, and serve."""
 import argparse
-import fnmatch
 import json
-import os
 from pathlib import Path
 import sys
-
+from typing import List, Optional
 from chat_ingest import parse_chat_log
 from config import ExplainerConfig, load_config_from_env
-from db import (
-    apply_schema, checkpoint_wal, connect_db, integrity_check,
-    rows_as_dicts,
-)
+from db import apply_schema, checkpoint_wal, connect_db, fetch_all_dicts, integrity_check
 from indexer import index_project_folder, ingest_chat_session
 from server import fts_query, run_server
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(prog="explainer-cli")
-    commands = parser.add_subparsers(dest="command", required=True)
+def build_parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="explainer-cli")
+    sub = root.add_subparsers(dest="command", required=True)
 
-    init = commands.add_parser("init")
-    init.add_argument("--schema", default="schema.sql")
+    init_cmd = sub.add_parser("init")
+    init_cmd.add_argument("--schema", default="schema.sql")
 
-    scan = commands.add_parser("scan-project")
-    scan.add_argument("--root", required=True)
-    scan.add_argument("--label", default="")
+    scan_cmd = sub.add_parser("scan-project")
+    scan_cmd.add_argument("--root", required=True)
+    scan_cmd.add_argument("--label", default="")
 
-    tree = commands.add_parser("scan-tree")
-    tree.add_argument("--root", required=True)
+    tree_cmd = sub.add_parser("scan-tree")
+    tree_cmd.add_argument("--root", required=True)
 
-    chat = commands.add_parser("ingest-chat")
-    chat.add_argument("--log", required=True)
-    chat.add_argument("--project-id", type=int)
+    chat_cmd = sub.add_parser("ingest-chat")
+    chat_cmd.add_argument("--log", required=True)
+    chat_cmd.add_argument("--project-id", type=int)
 
-    chat_tree = commands.add_parser("ingest-chat-tree")
-    chat_tree.add_argument("--root", required=True)
-    chat_tree.add_argument("--pattern", default="*.jsonl")
+    chat_tree_cmd = sub.add_parser("ingest-chat-tree")
+    chat_tree_cmd.add_argument("--root", required=True)
+    chat_tree_cmd.add_argument("--pattern", default="*.jsonl")
 
-    dry = commands.add_parser("dry-run-chat")
-    dry.add_argument("--log", required=True)
+    dry_cmd = sub.add_parser("dry-run-chat")
+    dry_cmd.add_argument("--log", required=True)
 
-    search = commands.add_parser("search")
-    search.add_argument("--q", required=True)
+    search_cmd = sub.add_parser("search")
+    search_cmd.add_argument("--q", required=True)
 
-    serve = commands.add_parser("serve")
-    serve.add_argument("--host")
-    serve.add_argument("--port", type=int)
-    return parser
+    serve_cmd = sub.add_parser("serve")
+    serve_cmd.add_argument("--host")
+    serve_cmd.add_argument("--port", type=int)
+    return root
 
 
-def make_config(args):
+def resolve_runtime_config(args: argparse.Namespace) -> ExplainerConfig:
     base = load_config_from_env()
     roots = list(base.allowed_roots)
-
-    candidate = getattr(args, "root", None)
-    log = getattr(args, "log", None)
-
-    if not roots and candidate:
-        roots.append(Path(candidate).expanduser().resolve())
-    if not roots and log:
-        roots.append(Path(log).expanduser().resolve().parent)
+    arg_root = getattr(args, "root", None)
+    if arg_root and not roots:
+        roots.append(Path(arg_root).resolve())
+    arg_log = getattr(args, "log", None)
+    if arg_log and not roots:
+        roots.append(Path(arg_log).resolve().parent)
 
     return ExplainerConfig(
         db_path=base.db_path,
@@ -70,38 +62,38 @@ def make_config(args):
         port=getattr(args, "port", None) or base.port,
         max_file_bytes=base.max_file_bytes,
         max_api_content_chars=base.max_api_content_chars,
-        max_chat_message_chars=base.max_chat_message_chars,
         allowed_origins=base.allowed_origins,
         ignored_dirs=base.ignored_dirs,
         allowed_extensions=base.allowed_extensions,
     )
 
 
-def output(value):
-    print(json.dumps(value, indent=2, ensure_ascii=False))
+def emit_json(payload: object) -> None:
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def main(argv=None):
+def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-
     try:
-        config = make_config(args)
-    except Exception as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
+        config = resolve_runtime_config(args)
+    except ValueError as exc:
+        print(f"CONFIG_ERROR: {exc}", file=sys.stderr)
         return 2
 
     if args.command == "dry-run-chat":
         try:
             session = parse_chat_log(Path(args.log), config)
-            output({
+        except Exception as exc:
+            print(f"DRY_RUN_ERROR: {exc}", file=sys.stderr)
+            return 2
+        emit_json(
+            {
                 "title": session.title,
                 "source_path": session.source_path,
                 "message_count": len(session.messages),
-            })
-            return 0
-        except Exception as exc:
-            print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
-            return 2
+            }
+        )
+        return 0
 
     conn = None
     try:
@@ -109,16 +101,17 @@ def main(argv=None):
             conn = connect_db(config.db_path)
             apply_schema(conn, Path(args.schema).resolve())
             checkpoint_wal(conn)
-            output({"status": "initialized", "integrity": integrity_check(conn)})
+            emit_json({"status": "initialized", "integrity": integrity_check(conn)})
             return 0
 
         if args.command == "serve":
             conn = connect_db(config.db_path)
-            tables = rows_as_dicts(conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ))
-            if not any(row["name"] == "projects" for row in tables):
-                raise RuntimeError("Database not initialized. Run init first.")
+            tables = fetch_all_dicts(
+                conn,
+                "SELECT name FROM sqlite_master WHERE type = 'table';",
+            )
+            if not any(item["name"] == "projects" for item in tables):
+                raise RuntimeError("Schema missing; execute 'init' before 'serve'")
             conn.close()
             conn = None
             run_server(config)
@@ -127,94 +120,84 @@ def main(argv=None):
         conn = connect_db(config.db_path)
 
         if args.command == "scan-project":
-            result = index_project_folder(
-                conn, Path(args.root), config, label=args.label or None
-            )
+            stats = index_project_folder(conn, Path(args.root), config, label=args.label)
             checkpoint_wal(conn)
-            output(result)
+            emit_json(stats)
             return 0
 
         if args.command == "scan-tree":
             root = Path(args.root).resolve()
             if not root.is_dir():
                 raise NotADirectoryError(str(root))
-            if not config.allowed_roots:
-                raise PermissionError("No allowed roots configured")
             results = []
             for child in sorted(root.iterdir()):
-                if child.is_symlink() or not child.is_dir():
-                    continue
-                if child.name in config.ignored_dirs:
+                if (
+                    not child.is_dir()
+                    or child.is_symlink()
+                    or child.name in config.ignored_dirs
+                ):
                     continue
                 results.append(index_project_folder(conn, child, config))
             checkpoint_wal(conn)
-            output({"projects": results})
+            emit_json({"projects": results})
             return 0
 
         if args.command == "ingest-chat":
-            result = ingest_chat_session(
-                conn, Path(args.log), config, project_id=args.project_id
+            stats = ingest_chat_session(
+                conn,
+                Path(args.log),
+                config,
+                project_id=args.project_id,
             )
             checkpoint_wal(conn)
-            output(result)
+            emit_json(stats)
             return 0
 
         if args.command == "ingest-chat-tree":
             root = Path(args.root).resolve()
             if not root.is_dir():
                 raise NotADirectoryError(str(root))
-            if not config.allowed_roots:
-                raise PermissionError("No allowed roots configured")
-
             results = []
-            for current, dirnames, filenames in os.walk(
-                root, topdown=True, followlinks=False
-            ):
-                current_path = Path(current)
-                dirnames[:] = [
-                    name for name in sorted(dirnames)
-                    if name not in config.ignored_dirs
-                    and not (current_path / name).is_symlink()
-                ]
-                for filename in sorted(filenames):
-                    path = current_path / filename
-                    if path.is_symlink() or not fnmatch.fnmatch(filename, args.pattern):
-                        continue
-                    results.append(ingest_chat_session(conn, path, config))
+            for candidate in sorted(root.rglob(args.pattern)):
+                if not candidate.is_file() or candidate.is_symlink():
+                    continue
+                if any(part in config.ignored_dirs for part in candidate.parts):
+                    continue
+                results.append(ingest_chat_session(conn, candidate, config))
             checkpoint_wal(conn)
-            output({"ingested_sessions": len(results), "results": results})
+            emit_json({"ingested_sessions": len(results), "results": results})
             return 0
 
         if args.command == "search":
-            expression = fts_query(args.q)
-            if not expression:
-                raise ValueError("Search query contains no searchable terms")
-            files = rows_as_dicts(conn.execute(
+            query_expr = fts_query(args.q)
+            if not query_expr:
+                raise ValueError("Search query produced no valid FTS5 tokens")
+            file_rows = fetch_all_dicts(
+                conn,
                 """
                 SELECT f.id, f.rel_path,
                        snippet(project_files_fts, 1, '[', ']', '...', 16) AS excerpt
                 FROM project_files_fts
                 JOIN project_files f ON f.id = project_files_fts.rowid
                 WHERE project_files_fts MATCH ?
-                LIMIT 25
+                LIMIT 25;
                 """,
-                (expression,),
-            ))
-            chats = rows_as_dicts(conn.execute(
+                (query_expr,),
+            )
+            chat_rows = fetch_all_dicts(
+                conn,
                 """
                 SELECT m.id, m.session_id, m.seq_index, m.role,
                        snippet(chat_messages_fts, 1, '[', ']', '...', 16) AS excerpt
                 FROM chat_messages_fts
                 JOIN chat_messages m ON m.id = chat_messages_fts.rowid
                 WHERE chat_messages_fts MATCH ?
-                LIMIT 25
+                LIMIT 25;
                 """,
-                (expression,),
-            ))
-            output({"query": args.q, "files": files, "chats": chats})
+                (query_expr,),
+            )
+            emit_json({"query": args.q, "files": file_rows, "chats": chat_rows})
             return 0
-
-        raise ValueError(f"Unsupported command: {args.command}")
 
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -222,6 +205,8 @@ def main(argv=None):
     finally:
         if conn is not None:
             conn.close()
+
+    return 2
 
 
 if __name__ == "__main__":

@@ -1,15 +1,14 @@
 FROM python:3.12-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    EXPLAINER_DB_PATH=/data/explainer.sqlite3 \
+    EXPLAINER_HOST=0.0.0.0 \
+    EXPLAINER_PORT=8765
+
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV EXPLAINER_DB_PATH=/data/explainer.sqlite3
-ENV EXPLAINER_HOST=0.0.0.0
-ENV EXPLAINER_PORT=8765
-
-COPY schema.sql config.py db.py scanner.py chat_ingest.py \
-     indexer.py server.py cli.py ./
+COPY schema.sql config.py db.py scanner.py chat_ingest.py indexer.py server.py cli.py ./
 
 RUN mkdir -p /data /workspace /host_root
 

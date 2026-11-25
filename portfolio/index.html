@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>swipswaps — Engineering Portfolio &amp; SQLite FTS5 Explainer</title>
+  <style>
+    :root{--md-bg:#f4f6fb;--md-surface:#fff;--md-surface-2:#eef2f9;--md-primary:#1a56db;
+    --md-primary-container:#dbeafe;--md-on-primary-container:#1e3a8a;--md-text:#111827;
+    --md-muted:#4b5563;--md-outline:#d1d5db;--md-ok-bg:#dcfce7;--md-ok-fg:#14532d;
+    --md-err-bg:#fee2e2;--md-err-fg:#7f1d1d;--md-warn-bg:#fef3c7;--md-warn-fg:#78350f;
+    --md-shadow-1:0 1px 3px rgba(15,23,42,.08),0 1px 2px rgba(15,23,42,.06);
+    --md-shadow-2:0 6px 16px rgba(15,23,42,.10)}
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Roboto,system-ui,-apple-system,"Segoe UI",sans-serif;
+    background:var(--md-bg);color:var(--md-text);line-height:1.55}
+    .app-bar{position:sticky;top:0;z-index:10;background:var(--md-surface);
+    box-shadow:var(--md-shadow-1);padding:1rem 1.5rem}
+    .container{max-width:78rem;margin:0 auto;padding:1.5rem}
+    .bar-inner{max-width:78rem;margin:0 auto;display:flex;flex-wrap:wrap;
+    align-items:center;justify-content:space-between;gap:1rem}
+    h1{margin:0;font-size:1.45rem;font-weight:600;letter-spacing:-.01em}
+    h2{margin:0 0 .5rem 0;font-size:1.15rem;font-weight:600}
+    h3{margin:.9rem 0 .25rem 0;font-size:.85rem;text-transform:uppercase;
+    letter-spacing:.05em;color:var(--md-muted)}
+    .subtitle{margin:.2rem 0 0 0;color:var(--md-muted);font-size:.92rem}
+    .chip{display:inline-flex;align-items:center;gap:.45rem;padding:.35rem .8rem;
+    border-radius:999px;font-size:.82rem;font-weight:600;background:var(--md-err-bg);
+    color:var(--md-err-fg)}
+    .chip.online{background:var(--md-ok-bg);color:var(--md-ok-fg)}
+    .toolbar{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin-bottom:1.25rem}
+    input,select{padding:.6rem .8rem;border:1px solid var(--md-outline);border-radius:10px;
+    background:var(--md-surface);color:var(--md-text);font-size:.92rem}
+    input[type="search"]{flex:1 1 16rem}
+    button{background:var(--md-primary);color:#fff;border:0;border-radius:999px;
+    padding:.6rem 1.1rem;font-size:.9rem;font-weight:600;cursor:pointer;
+    box-shadow:var(--md-shadow-1)}
+    button:hover:not(:disabled){filter:brightness(1.06)}
+    button:disabled{opacity:.45;cursor:not-allowed}
+    button.tonal{background:var(--md-primary-container);color:var(--md-on-primary-container);
+    box-shadow:none}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(21rem,1fr));gap:1.1rem}
+    .card{background:var(--md-surface);border-radius:16px;padding:1.2rem 1.3rem;
+    box-shadow:var(--md-shadow-1);display:flex;flex-direction:column;
+    justify-content:space-between;transition:transform .15s,box-shadow .15s}
+    .card:hover{transform:translateY(-2px);box-shadow:var(--md-shadow-2)}
+    .card.not-indexed{background:var(--md-surface-2)}
+    .pill-row{display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.65rem}
+    .pill{font-size:.75rem;font-weight:600;padding:.2rem .55rem;border-radius:999px;
+    background:var(--md-surface-2);color:var(--md-muted)}
+    .pill.warn{background:var(--md-warn-bg);color:var(--md-warn-fg)}
+    .card p{margin:.2rem 0;font-size:.9rem}
+    code{display:block;margin-top:.35rem;padding:.55rem .7rem;border-radius:10px;
+    background:#0f172a;color:#e2e8f0;font-size:.78rem;overflow-x:auto;
+    white-space:pre-wrap;word-break:break-word}
+    .card-actions{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1rem;
+    padding-top:.75rem;border-top:1px solid #f1f5f9}
+    .inspector{margin-top:1.5rem;background:var(--md-surface);border-radius:16px;
+    padding:1.25rem 1.4rem;box-shadow:var(--md-shadow-1)}
+    pre{margin:.6rem 0 0 0;padding:.85rem;border-radius:12px;background:#0f172a;
+    color:#f8fafc;font-size:.82rem;max-height:22rem;overflow:auto;white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <header class="app-bar">
+    <div class="bar-inner">
+      <div>
+        <h1>swipswaps Portfolio &amp; Explainer Hub</h1>
+        <p class="subtitle">Project directory wired to SQLite WAL + FTS5 at
+          <code style="display:inline;padding:.1rem .35rem;">127.0.0.1:8765</code></p>
+      </div>
+      <span id="backend-chip" class="chip">Backend: Probing...</span>
+    </div>
+  </header>
+  <main class="container">
+    <div class="toolbar">
+      <input id="api-url" type="text" value="http://127.0.0.1:8765"
+             aria-label="Loopback API Base URL" />
+      <select id="domain-filter" aria-label="Filter by domain">
+        <option value="all">All Domains</option>
+        <option value="explainer">SQLite / Explainer</option>
+        <option value="homelab">Homelab / IaC</option>
+        <option value="simulation">Simulation / RAG</option>
+        <option value="live-db">Live Indexed Projects</option>
+      </select>
+      <input id="filter-input" type="search" placeholder="Filter portfolio cards..." />
+      <button id="probe-btn" type="button">Check Backend</button>
+    </div>
+    <section id="cards-grid" class="grid"></section>
+    <section class="inspector">
+      <h2>Live SQLite FTS5 Search &amp; Session/Project Inspector</h2>
+      <div class="toolbar" style="margin-bottom:.5rem;">
+        <input id="fts-query" type="search" value="SQLite"
+               placeholder="Query /api/search?q=..." />
+        <button id="fts-btn" type="button">FTS5 Search</button>
+        <button id="projects-btn" class="tonal" type="button">List /api/projects</button>
+        <button id="chats-btn" class="tonal" type="button">List /api/chats</button>
+      </div>
+      <pre id="inspector-out">Ready.</pre>
+    </section>
+  </main>
+  <script>
+    const BASE_REPOS = [
+      { name:"explainer-chat-repo", domain:"explainer", badge:"SQLite WAL + FTS5",
+        howWeGotHere:"schema.sql, db.py, scanner.py, chat_ingest.py, indexer.py, server.py, cli.py.",
+        whereWeAre:"Serves read-only JSON over 127.0.0.1:8765 with FTS5 snippet search.",
+        howToUse:"python3 cli.py init && python3 cli.py scan-project --root . --label explainer-chat-repo && python3 cli.py serve" },
+      { name:"proxmox-orchestrator", domain:"homelab", badge:"Homelab Orchestration",
+        howWeGotHere:"Proxmox VE host orchestration, VM provisioning, static architecture docs.",
+        whereWeAre:"Indexable via EXPLAINER_ALLOWED_ROOTS.",
+        howToUse:"python3 cli.py scan-project --root /path/to/proxmox-orchestrator --label proxmox-orchestrator" },
+      { name:"pulumi-homelab-explainer", domain:"homelab", badge:"Pulumi IaC + Pages",
+        howWeGotHere:"Pulumi homelab documentation and GitHub Pages deployment.",
+        whereWeAre:"Published on GitHub Pages; local backend compatible.",
+        howToUse:"python3 cli.py scan-project --root /path/to/pulumi-homelab --label pulumi-homelab" },
+      { name:"parachute-cfd-game", domain:"simulation", badge:"Godot 4 + CFD",
+        howWeGotHere:"Aerodynamic parachute simulation in Godot 4 with iterative physics tuning.",
+        whereWeAre:"Indexable via EXPLAINER_ALLOWED_ROOTS.",
+        howToUse:"python3 cli.py scan-project --root /path/to/parachute-cfd-game --label parachute-cfd-game" },
+      { name:"production-local-rag", domain:"simulation", badge:"Local RAG + SQLite",
+        howWeGotHere:"Local-first retrieval pipelines on SQLite.",
+        whereWeAre:"Pairs with explainer chat/file indexing.",
+        howToUse:"python3 cli.py scan-project --root /path/to/production-local-rag --label production-local-rag" }
+    ];
+    let allRepos = BASE_REPOS.map(r => ({...r, indexed:false}));
+    const grid = document.getElementById("cards-grid");
+    const chip = document.getElementById("backend-chip");
+    const apiUrlInput = document.getElementById("api-url");
+    const domainFilter = document.getElementById("domain-filter");
+    const filterInput = document.getElementById("filter-input");
+    const inspectorOut = document.getElementById("inspector-out");
+
+    function apiBase(){ return apiUrlInput.value.trim().replace(/\/+$/,""); }
+
+    // E1: no manual Origin header — browser supplies it; Origin is forbidden
+    //     to set from JavaScript.
+    //     https://fetch.spec.whatwg.org/#forbidden-header-name
+    // E2: read .text() then JSON.parse — Response.json() rejects on
+    //     non-JSON bodies, masking the real HTTP error.
+    //     https://developer.mozilla.org/en-US/docs/Web/API/Response/json
+    // U3: thrown Error carries .status and .payload.
+    async function callApi(path) {
+      const res = await fetch(`${apiBase()}${path}`, {
+        method:"GET", mode:"cors", cache:"no-store"
+      });
+      const text = await res.text();
+      let payload;
+      try { payload = text ? JSON.parse(text) : {}; }
+      catch (_e) { payload = { __nonJsonBody: text.slice(0,400) }; }
+      if (!res.ok) {
+        const reason = payload && payload.error ? payload.error
+                     : payload.__nonJsonBody ? `HTTP ${res.status}: non-JSON body`
+                     : `HTTP ${res.status}`;
+        const err = new Error(reason);
+        err.status = res.status;
+        err.payload = payload;
+        throw err;
+      }
+      return payload;
+    }
+
+    async function syncLiveProjects() {
+      const liveLabels = new Set();
+      try {
+        const data = await callApi("/api/projects?limit=100");
+        const live = data.projects || [];
+        for (const p of live) { liveLabels.add(p.label); }
+        const known = new Set(allRepos.map(r => r.name));
+        const extra = live.filter(p => !known.has(p.label)).map(p => ({
+          name:p.label, domain:"live-db",
+          badge:`SQLite (${p.file_count ?? 0} files)`,
+          howWeGotHere:`Indexed from ${p.root_path}.`,
+          whereWeAre:`Last scanned ${p.last_scan_at || "recently"}.`,
+          howToUse:`curl -sG "${apiBase()}/api/search" --data-urlencode "q=${p.label}"`,
+          indexed:true
+        }));
+        allRepos = BASE_REPOS.map(r => ({...r, indexed:liveLabels.has(r.name)})).concat(extra);
+      } catch (_e) {
+        allRepos = BASE_REPOS.map(r => ({...r, indexed:false}));
+      }
+      renderCards();
+    }
+
+    async function checkBackend() {
+      try {
+        const data = await callApi("/api/health");
+        chip.textContent = `Backend Online (${data.indexed_file_count ?? 0} files, ${data.session_count ?? 0} chats)`;
+        chip.classList.add("online");
+        inspectorOut.textContent = JSON.stringify(data, null, 2);
+        await syncLiveProjects();
+      } catch (err) {
+        chip.textContent = "Backend Offline";
+        chip.classList.remove("online");
+        inspectorOut.textContent = JSON.stringify({
+          status:"offline", error:err.message||String(err),
+          http_status:err.status ?? null
+        }, null, 2);
+        allRepos = BASE_REPOS.map(r => ({...r, indexed:false}));
+        renderCards();
+      }
+    }
+
+    function renderCards() {
+      const q = filterInput.value.trim().toLowerCase();
+      const dom = domainFilter.value;
+      grid.textContent = "";
+      const filtered = allRepos.filter(r => {
+        const domainOk = dom === "all" || r.domain === dom;
+        const textOk = !q ||
+          `${r.name} ${r.badge} ${r.howWeGotHere} ${r.whereWeAre} ${r.howToUse}`
+            .toLowerCase().includes(q);
+        return domainOk && textOk;
+      });
+      for (const repo of filtered) {
+        const card = document.createElement("article");
+        card.className = "card" + (repo.indexed ? "" : " not-indexed");
+        const pills = document.createElement("div");
+        pills.className = "pill-row";
+        const p1 = document.createElement("span");
+        p1.className = "pill"; p1.textContent = repo.domain;
+        const p2 = document.createElement("span");
+        p2.className = "pill" + (repo.indexed ? "" : " warn");
+        p2.textContent = repo.indexed ? repo.badge : `${repo.badge} · not yet indexed`;
+        pills.append(p1, p2);
+        const title = document.createElement("h2"); title.textContent = repo.name;
+        const h1 = document.createElement("h3"); h1.textContent = "How We Got Here";
+        const b1 = document.createElement("p"); b1.textContent = repo.howWeGotHere;
+        const h2 = document.createElement("h3"); h2.textContent = "Where We Are";
+        const b2 = document.createElement("p"); b2.textContent = repo.whereWeAre;
+        const h3 = document.createElement("h3"); h3.textContent = "How to Use";
+        const code = document.createElement("code"); code.textContent = repo.howToUse;
+        const actions = document.createElement("div");
+        actions.className = "card-actions";
+        const searchBtn = document.createElement("button");
+        searchBtn.type = "button";
+        searchBtn.className = "tonal";
+        searchBtn.textContent = `Search "${repo.name}"`;
+        searchBtn.disabled = !repo.indexed;
+        if (!repo.indexed) searchBtn.title = "Run scan-project for this folder, then reload.";
+        searchBtn.addEventListener("click", async () => {
+          document.getElementById("fts-query").value = repo.name;
+          try {
+            const res = await callApi(`/api/search?q=${encodeURIComponent(repo.name)}`);
+            inspectorOut.textContent = JSON.stringify(res, null, 2);
+          } catch (err) {
+            inspectorOut.textContent = JSON.stringify({
+              query:repo.name, error:err.message||String(err),
+              http_status:err.status ?? null
+            }, null, 2);
+          }
+        });
+        actions.appendChild(searchBtn);
+        card.append(pills, title, h1, b1, h2, b2, h3, code, actions);
+        grid.appendChild(card);
+      }
+    }
+
+    document.getElementById("probe-btn").addEventListener("click", checkBackend);
+    domainFilter.addEventListener("change", renderCards);
+    filterInput.addEventListener("input", renderCards);
+    document.getElementById("fts-btn").addEventListener("click", async () => {
+      const q = document.getElementById("fts-query").value.trim() || "SQLite";
+      try {
+        const res = await callApi(`/api/search?q=${encodeURIComponent(q)}`);
+        inspectorOut.textContent = JSON.stringify(res, null, 2);
+      } catch (err) {
+        inspectorOut.textContent = JSON.stringify({
+          query:q, error:err.message||String(err), http_status:err.status ?? null
+        }, null, 2);
+      }
+    });
+    document.getElementById("projects-btn").addEventListener("click", async () => {
+      try {
+        const res = await callApi("/api/projects?limit=50");
+        inspectorOut.textContent = JSON.stringify(res, null, 2);
+      } catch (err) {
+        inspectorOut.textContent = JSON.stringify({
+          error:err.message||String(err), http_status:err.status ?? null
+        }, null, 2);
+      }
+    });
+    document.getElementById("chats-btn").addEventListener("click", async () => {
+      try {
+        const res = await callApi("/api/chats?limit=50");
+        inspectorOut.textContent = JSON.stringify(res, null, 2);
+      } catch (err) {
+        inspectorOut.textContent = JSON.stringify({
+          error:err.message||String(err), http_status:err.status ?? null
+        }, null, 2);
+      }
+    });
+    renderCards();
+    checkBackend();
+  </script>
+</body>
+</html>
